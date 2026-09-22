@@ -35,6 +35,43 @@ const VIDEO_KEYWORD = {
   低落: "心情低落怎么办",
   心烦: "心烦怎么办",
 };
+const VIDEO_PRESETS = {
+  焦虑: [
+    ["BV17DHwzkEEe", "学习过程中容易产生焦虑情绪，怎么缓解焦虑？"],
+    ["BV1yYGhz5Emu", "倪海厦：焦虑的根源与治症"],
+    ["BV1fLYJ6zEUT", "停止灾难性思维，缓解焦虑内耗"],
+  ],
+  低落: [
+    ["BV1rumfYZEX7", "当你的心情低落时，你应该这样做"],
+    ["BV1Kaeh6HEZ2", "感觉没有希望了，想放弃？就看看这条视频。"],
+    ["BV1vo8QzcENd", "为什么你总是不开心？习惯性悲观怎么办"],
+  ],
+  心烦: [
+    ["BV1Fd4y1572B", "抑郁烦躁、心慌怎么办？这几个地方按一按，可缓解！"],
+    ["BV1hG4y1i7QT", "心烦心慌，生闷气？中医教您简单一招"],
+    ["BV1Lt4y1G7mG", "心烦意乱的时候，如何快速调整自己？"],
+  ],
+  累: [
+    ["BV1yph76uESz", "累了可以休息，但不要忘了脚下的路"],
+    ["BV1TY4y1676v", "休息术冥想：休息十分钟，等于深度睡眠三小时"],
+    ["BV1bk4y1w74k", "考研九月疲惫期，很多人学不动了进来听听"],
+  ],
+  平静: [
+    ["BV1NM4y1d7aC", "21天系统学习冥想，科学入门正念"],
+    ["BV1Yt4y1C7zM", "零基础冥想入门，十天引导式冥想"],
+    ["BV1jfhj6dEQA", "新手打坐冥想入门教学"],
+  ],
+  期待: [
+    ["BV1gU4y1579n", "如何停止对未来的恐惧"],
+    ["BV1seba63ETV", "停止预测未来：你正在经历的可能是预期性焦虑"],
+    ["BV11zmoY8EqL", "对于未发生的事过度焦虑，怎么应对"],
+  ],
+  开心: [
+    ["BV1dc411y7KC", "心情不好？看这个视频就够了。"],
+    ["BV1Ukha6QEUE", "有时候发泄一下心情会变好"],
+    ["BV16i421R7GN", "当你不开心的时候，就看看这些话"],
+  ],
+};
 const CRISIS_RE = /自杀|不想活|活不下去|结束生命|轻生|自残|割腕|去死|伤害自己|不想活着/;
 const HOTLINES = "全国心理援助热线 12356，北京心理危机研究与干预中心 010-82951332，生命热线 400-821-1215。要是已经有危险，打当地急救电话。";
 
@@ -105,6 +142,11 @@ function blankDraft() {
     videoKeyword: "",
     videoReason: "",
     video: null,
+    videos: [],
+    followups: [],
+    pendingQuestion: "",
+    followDone: false,
+    talkStarted: false,
     messages: [],
   };
 }
@@ -448,22 +490,42 @@ function firstBiliVideo(json) {
     pageUrl: absUrl(hit.arcurl) || `https://www.bilibili.com/video/${bvid}`,
   };
 }
+function presetVideos(emotion) {
+  const rows = VIDEO_PRESETS[emotion] || VIDEO_PRESETS["焦虑"];
+  return rows.map(([bvid, title]) => ({
+    bvid,
+    title,
+    author: "",
+    cover: "",
+    pageUrl: `https://www.bilibili.com/video/${bvid}`,
+  }));
+}
+function videosFromSearch(json) {
+  if (!json || json.code !== 0 || !Array.isArray(json.data?.result)) return [];
+  const skip = /炉石|小鸡|Apple Watch|金拍谢|安妮单人|游戏崩溃/;
+  const list = json.data.result.filter((item) => item && item.bvid && !skip.test(stripHtml(item.title)));
+  const picked = (list.length ? list : json.data.result.filter((item) => item && item.bvid)).slice(0, 3);
+  return picked.map((item) => {
+    const bvid = String(item.bvid);
+    return {
+      bvid,
+      title: stripHtml(item.title) || "B 站视频",
+      author: item.author || "",
+      cover: absUrl(item.pic || ""),
+      pageUrl: `https://www.bilibili.com/video/${bvid}`,
+    };
+  });
+}
 async function searchBilibili(keyword) {
   const encoded = encodeURIComponent(keyword);
-  const urls = [
-    `https://api.bilibili.com/x/web-interface/search/all/v2?keyword=${encoded}`,
-    `https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encoded}&order=totalrank&page=1`,
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, { referrerPolicy: "no-referrer", signal: AbortSignal.timeout(6000) });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const video = firstBiliVideo(json);
-      if (video) return video;
-    } catch { /* 搜索页仍然可用 */ }
-  }
-  return null;
+  const url = `https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encoded}&order=totalrank&page=1`;
+  try {
+    const res = await fetch(url, { referrerPolicy: "no-referrer", signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return [];
+    const videos = videosFromSearch(await res.json());
+    if (videos.length) return videos;
+  } catch { /* 用事先搜好的三条 */ }
+  return [];
 }
 
 function svgEl(name, attrs = {}) {
@@ -601,6 +663,7 @@ function paintResult() {
   }
   paintTracks();
   paintVideo();
+  paintFollow();
   const meta = $("entry-meta");
   meta.textContent = draft.id ? `${draft.date} · ${draft.emotion} · ${draft.moodScore} 分` : "";
   $("btn-delete").hidden = !draft.id;
@@ -647,89 +710,46 @@ function paintTracks() {
     list.append(li);
   });
 }
+function currentVideos() {
+  if (draft.videos && draft.videos.length) return draft.videos.slice(0, 3);
+  if (draft.video && draft.video.bvid) return [draft.video];
+  if (draft.emotion) return presetVideos(draft.emotion);
+  return [];
+}
 function paintVideo() {
   const card = $("video-card");
   if (!card) return;
-  const keyword = videoKeywordFor(draft);
-  const searchUrl = videoSearchUrl(keyword);
-  $("video-reason").textContent = draft.videoReason || (draft.emotion ? `心情是${draft.emotion}的话，B 站上有人专门讲这个时候怎么办。` : "");
+  $("video-reason").textContent = draft.videoReason || (draft.emotion ? `这三支是按「${videoKeywordFor(draft)}」搜到的前几条，点进去就是视频。` : "");
   $("care-video").hidden = !draft.emotion;
   card.replaceChildren();
-  const video = draft.video;
-  if (video && video.bvid) {
-    const row = document.createElement("div");
-    row.className = "video-found";
+  const videos = currentVideos();
+  videos.forEach((video) => {
+    const link = document.createElement("a");
+    link.className = "video-found";
+    link.href = video.pageUrl || `https://www.bilibili.com/video/${video.bvid}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
     if (video.cover) {
       const img = document.createElement("img");
       img.alt = "";
       img.src = video.cover;
       img.addEventListener("error", () => img.replaceWith(Object.assign(document.createElement("div"), { className: "ph" })));
-      row.append(img);
+      link.append(img);
     } else {
-      const mark = document.createElement("div");
+      const mark = document.createElement("span");
       mark.className = "video-mark";
       mark.textContent = "B";
-      row.append(mark);
+      link.append(mark);
     }
-    const text = document.createElement("div");
-    const who = document.createElement("p");
-    who.className = "who";
-    who.textContent = video.title;
-    const meta = document.createElement("p");
-    meta.className = "meta";
-    meta.textContent = video.author ? `${video.author}，B 站` : "B 站";
-    const actions = document.createElement("div");
-    actions.className = "video-actions";
-    const play = document.createElement("button");
-    play.type = "button";
-    play.className = "btn tiny";
-    play.textContent = "就在这页看";
-    play.addEventListener("click", () => {
-      const old = card.querySelector(".video-frame");
-      if (old) {
-        old.remove();
-        play.textContent = "就在这页看";
-        return;
-      }
-      const frame = document.createElement("iframe");
-      frame.className = "video-frame";
-      frame.title = video.title;
-      frame.allowFullscreen = true;
-      frame.src = `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(video.bvid)}&page=1&autoplay=0&danmaku=0&high_quality=1`;
-      card.append(frame);
-      play.textContent = "收起来";
-    });
-    const open = document.createElement("a");
-    open.className = "text-btn";
-    open.href = video.pageUrl || searchUrl;
-    open.target = "_blank";
-    open.rel = "noopener noreferrer";
-    open.textContent = "去 B 站看";
-    actions.append(play, open);
-    text.append(who, meta, actions);
-    row.append(text);
-    card.append(row);
-  }
-  const link = document.createElement("a");
-  link.className = video && video.bvid ? "text-btn" : "video-pick";
-  link.href = searchUrl;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  if (video && video.bvid) {
-    link.textContent = "再去搜搜别的";
-  } else {
-    const mark = document.createElement("span");
-    mark.className = "video-mark";
-    mark.textContent = "B";
     const text = document.createElement("span");
-    const strong = document.createElement("strong");
-    strong.textContent = keyword;
-    const small = document.createElement("small");
-    small.textContent = "点进去，B 站会按这个词找视频。";
-    text.append(strong, small);
-    link.append(mark, text);
-  }
-  card.append(link);
+    const who = document.createElement("strong");
+    who.textContent = video.title || "B 站视频";
+    const meta = document.createElement("small");
+    meta.textContent = link.href;
+    text.append(who, meta);
+    link.append(text);
+    card.append(link);
+  });
 }
 function paintSpark() {
   const days = lastNDays(7);
@@ -860,6 +880,40 @@ function paintWrite() {
   paintSpark();
   syncButtons();
 }
+let openingTalk = false;
+async function openCounselor(entry) {
+  if (!entry?.id || openingTalk || entry.talkStarted) return;
+  if (entry.messages && entry.messages.length) return;
+  if (!hasKey()) return;
+  openingTalk = true;
+  entry.talkStarted = true;
+  saveDb();
+  if (draft === entry && state.route === "talk") paintTalk();
+  state.busy = "talk";
+  syncButtons();
+  try {
+    const reply = await complete({
+      temperature: 0.7,
+      json: false,
+      maxTokens: 420,
+      messages: [
+        { role: "system", content: `${talkSystem(entry)}\n现在请你先开口。根据日记和补充，先点出一件具体的事，再问一个小问题。不要等对方先说话。80到160个字。` },
+        { role: "user", content: "我写好了。" },
+      ],
+    });
+    entry.messages = [{ role: "assistant", content: reply, at: new Date().toISOString() }];
+  } catch (error) {
+    entry.talkStarted = false;
+    const msg = friendlyError(error);
+    if (msg && draft === entry) toast(msg);
+  } finally {
+    openingTalk = false;
+    if (state.busy === "talk") state.busy = false;
+    saveDb();
+    syncButtons();
+    if (draft === entry && state.route === "talk") paintTalk();
+  }
+}
 function paintTalk() {
   const entry = draft && draft.id ? draft : latestEntry();
   if (entry && entry.id !== draft?.id) draft = entry;
@@ -882,7 +936,7 @@ function paintTalk() {
   if (!messages.length) {
     const note = document.createElement("div");
     note.className = "bubble note";
-    note.textContent = draft?.id ? "我看过你写的。想从哪句说？" : "先写一句，再来聊。";
+    note.textContent = draft?.talkStarted ? "我看看你写的，马上跟你说。" : (draft?.id ? "我先开口。" : "先写一句，再来聊。");
     log.append(note);
   }
   messages.forEach((message) => {
@@ -907,6 +961,7 @@ function paintTalk() {
   }
   $("talk-form").hidden = !draft?.id;
   syncButtons();
+  if (state.route === "talk") openCounselor(draft);
 }
 function syncButtons() {
   const writing = state.busy === "diary";
@@ -995,14 +1050,123 @@ async function attachMusic(query, reason, entry = draft) {
 async function attachVideo(entry, keyword) {
   const next = String(keyword || videoKeywordFor(entry)).trim().slice(0, 24);
   if (!next) return;
-  if (next !== entry.videoKeyword) entry.video = null;
   entry.videoKeyword = next;
   if (draft === entry) paintVideo();
-  if (entry.video && entry.video.bvid) return;
-  const video = await searchBilibili(next);
-  if (video) entry.video = video;
+  let videos = await searchBilibili(next);
+  if (!videos.length) videos = presetVideos(entry.emotion);
+  entry.videos = videos;
+  entry.video = videos[0] || null;
+  entry.videoReason = `这三支是按「${next}」搜到的前几条，点进去就是视频。`;
   if (entry.id) saveDb();
   if (draft === entry) paintVideo();
+}
+function fallbackQuestion(entry, index) {
+  const lines = [
+    "这件事发生的时候，你身体哪里最明显？",
+    "当时旁边有人吗？对方说了什么，或者没说什么？",
+    "这件事情里，你最想先放下的是哪一句？",
+  ];
+  return lines[index] || lines[2];
+}
+function paintFollow() {
+  const box = $("follow-box");
+  if (!box) return;
+  const show = Boolean(draft.pendingQuestion) && !draft.followDone;
+  box.hidden = !show;
+  if (!show) return;
+  const step = (draft.followups || []).length + 1;
+  $("follow-step").textContent = `第 ${step} / 3 句`;
+  $("follow-q").textContent = draft.pendingQuestion;
+  const button = $("follow-send");
+  button.disabled = state.busy === "ask" || state.busy === "diary";
+  button.textContent = state.busy === "ask" ? "在听…" : (step === 3 ? "说完了，你帮我看看" : "就这句");
+}
+async function nextQuestion(entry) {
+  const asked = (entry.followups || []).map((item, index) => `${index + 1}. 问：${item.q}\n答：${item.a}`).join("\n");
+  const content = await complete({
+    temperature: 0.7,
+    json: true,
+    maxTokens: 240,
+    messages: [
+      { role: "system", content: "你是心理咨询师。只再问一个新的、具体的问题，把这件事问清楚。不要分析，不要建议，不要说自己是人工智能。只输出 JSON：{\"question\":\"一句口语\"}" },
+      { role: "user", content: `日记：${entry.diary || entry.brief}\n已经问过：\n${asked || "（还没有）"}\n请出第 ${entry.followups.length + 1} 个问题。` },
+    ],
+  });
+  const raw = parseJson(content);
+  return String(raw.question || "").trim() || fallbackQuestion(entry, entry.followups.length);
+}
+async function analyzeEntry(entry) {
+  const extra = (entry.followups || []).map((item, index) => `${index + 1}. 问：${item.q}\n答：${item.a}`).join("\n");
+  const content = await complete({
+    temperature: 0.7,
+    json: true,
+    maxTokens: 1600,
+    messages: [
+      { role: "system", content: DIARY_SYSTEM },
+      { role: "user", content: `日期：${entry.date}\n心情：${entry.emotion}\n分数：${entry.moodScore}\n原话：${entry.brief}\n日记：${entry.diary}\n追问：\n${extra}\n请根据日记和这三句补充，给出分析、坐一下、动一动、音乐和 B 站搜索词。日记字段请原样返回现在这篇日记，不要重写。` },
+    ],
+  });
+  const raw = parseJson(content);
+  entry.triggers = Array.isArray(raw.triggers) ? raw.triggers.map((item) => String(item).slice(0, 16)).filter(Boolean).slice(0, 3) : [];
+  entry.analysis = String(raw.analysis || "").trim();
+  entry.meditation = String(raw.meditation || "").trim();
+  entry.movement = String(raw.movement || "").trim();
+  entry.musicQuery = String(raw.musicQuery || MUSIC_FALLBACK[entry.emotion] || "calm piano").slice(0, 80);
+  entry.musicReason = String(raw.musicReason || "").trim();
+  entry.videoKeyword = String(raw.videoKeyword || VIDEO_KEYWORD[entry.emotion] || "").trim().slice(0, 24);
+  entry.videoReason = String(raw.videoReason || "").trim();
+  entry.updatedAt = new Date().toISOString();
+  saveDb();
+  if (draft === entry) paintWrite();
+  await Promise.all([
+    attachMusic(entry.musicQuery, entry.musicReason, entry),
+    attachVideo(entry, entry.videoKeyword),
+  ]);
+}
+async function answerFollow() {
+  const answer = $("follow-a").value.trim();
+  if (!answer) {
+    toast("先回一句。");
+    return;
+  }
+  if (!draft.pendingQuestion || state.busy) return;
+  const entry = draft;
+  entry.followups = entry.followups || [];
+  entry.followups.push({ q: entry.pendingQuestion, a: answer });
+  $("follow-a").value = "";
+  entry.pendingQuestion = "";
+  if (entry.followups.length >= 3) {
+    entry.followDone = true;
+    commitDraft();
+    if (draft === entry) paintFollow();
+    state.busy = "diary";
+    syncButtons();
+    try {
+      await analyzeEntry(entry);
+    } catch (error) {
+      const msg = friendlyError(error);
+      if (msg) toast(msg);
+    } finally {
+      state.busy = false;
+      syncButtons();
+      if (draft === entry) paintWrite();
+    }
+    return;
+  }
+  state.busy = "ask";
+  if (draft === entry) paintFollow();
+  try {
+    entry.pendingQuestion = await nextQuestion(entry);
+  } catch (error) {
+    entry.pendingQuestion = fallbackQuestion(entry, entry.followups.length);
+    const msg = friendlyError(error);
+    if (msg) toast(msg);
+  } finally {
+    state.busy = false;
+    commitDraft();
+    syncButtons();
+    if (draft === entry) paintFollow();
+  }
 }
 async function saveOnly() {
   draft.brief = $("brief").value;
@@ -1047,26 +1211,26 @@ async function generate() {
       json: true,
       maxTokens: 1800,
       messages: [
-        { role: "system", content: DIARY_SYSTEM },
-        { role: "user", content: `日期：${entry.date}\n用户选的心情：${entry.emotion}\n用户打的分（1到10，10最好）：${entry.moodScore}\n用户的原话：\n${entry.brief}` },
+        { role: "system", content: "你是心理咨询师。把来访者的一句短话收成第一人称日记，并就这件事问第一个具体问题。不要分析，不要建议，不要说自己是人工智能。日记用口语，180到320字，不编造他没说的人和事。问题只问一句。只输出 JSON：{\"title\":\"不超过12个字\",\"diary\":\"...\",\"question\":\"一句口语\"}" },
+        { role: "user", content: `日期：${entry.date}\n心情：${entry.emotion}\n分数（10分最好）：${entry.moodScore}\n原话：\n${entry.brief}` },
       ],
     });
     const raw = parseJson(content);
-    const emotion = MOODS.some((mood) => mood.label === raw.emotion) ? raw.emotion : entry.emotion;
     entry.title = String(raw.title || "").replace(/\s+/g, "").slice(0, 24);
     entry.diary = String(raw.diary || "").trim();
-    entry.aiEmotion = emotion;
-    entry.aiScore = clamp(Math.round(Number(raw.moodScore)), 1, 10);
-    entry.triggers = Array.isArray(raw.triggers) ? raw.triggers.map((item) => String(item).slice(0, 16)).filter(Boolean).slice(0, 3) : [];
-    entry.analysis = String(raw.analysis || "").trim();
-    entry.meditation = String(raw.meditation || "").trim();
-    entry.movement = String(raw.movement || "").trim();
-    entry.musicQuery = String(raw.musicQuery || MUSIC_FALLBACK[entry.emotion] || "calm piano").slice(0, 80);
-    entry.musicReason = String(raw.musicReason || "").trim();
-    entry.videoKeyword = String(raw.videoKeyword || "").trim().slice(0, 24);
-    entry.videoReason = String(raw.videoReason || "").trim();
-    entry.video = null;
     if (!entry.diary) throw new Error("这次没写成一段，再试一次。");
+    entry.followups = [];
+    entry.followDone = false;
+    entry.pendingQuestion = String(raw.question || "").trim() || fallbackQuestion(entry, 0);
+    entry.analysis = "";
+    entry.triggers = [];
+    entry.meditation = "";
+    entry.movement = "";
+    entry.talkStarted = false;
+    entry.messages = [];
+    entry.musicQuery = MUSIC_FALLBACK[entry.emotion] || "calm piano";
+    entry.musicReason = `你选了${entry.emotion}，先放段安静点的。`;
+    entry.videoKeyword = VIDEO_KEYWORD[entry.emotion] || "心情不好怎么办";
     entry.updatedAt = new Date().toISOString();
     saveDb();
     if (draft === entry) {
@@ -1102,7 +1266,9 @@ function talkSystem(entry) {
 原话：${entry.brief || "（没写）"}
 日记：${entry.diary || "（还没写成段）"}
 可能碰到的事：${(entry.triggers || []).join("、") || "（还没有）"}
-你之前的看法：${entry.analysis || "（没有）"}`;
+你之前的看法：${entry.analysis || "（还没写完三句追问）"}
+他补充过的话：
+${(entry.followups || []).map((item, index) => `${index + 1}. 你问：${item.q}\n他答：${item.a}`).join("\n") || "（还没有）"}`;
 }
 async function sendTalk(text) {
   const content = (text || "").trim();
@@ -1273,6 +1439,8 @@ function bind() {
   });
   $("btn-save").addEventListener("click", () => saveOnly());
   $("btn-generate").addEventListener("click", () => generate());
+  $("follow-send").addEventListener("mousedown", (event) => event.preventDefault());
+  $("follow-send").addEventListener("click", () => answerFollow());
   $("brief").addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") generate();
   });

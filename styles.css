@@ -333,7 +333,9 @@ textarea::placeholder { color: #8a7464; }
   font-size: 28px;
 }
 .video-pick strong, .video-found .who { display: block; line-height: 1.45; }
-.video-pick small, .video-found .meta { display: block; margin-top: 4px; color: var(--ink-soft); font-size: 12px; }
+.video-pick small, .video-found .meta, #video-card .video-found small { display: block; margin-top: 4px; color: var(--ink-soft); font-size: 12px; word-break: break-all; }
+#video-card { display: grid; gap: 10px; margin-top: 8px; }
+#follow-q { margin: 8px 0; font-size: 18px; line-height: 1.7; }
 .video-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
 .video-frame {
   display: block;
