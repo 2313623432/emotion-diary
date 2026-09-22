@@ -490,6 +490,17 @@ function firstBiliVideo(json) {
     pageUrl: absUrl(hit.arcurl) || `https://www.bilibili.com/video/${bvid}`,
   };
 }
+function matchPreset(entry) {
+  const text = `${entry?.videoKeyword || ""} ${entry?.emotion || ""}`;
+  if (/低落|不开心|没希望|难过/.test(text)) return "低落";
+  if (/心烦|烦躁|生气|闷/.test(text)) return "心烦";
+  if (/累|疲惫|休息|困/.test(text)) return "累";
+  if (/冥想|平静|放松/.test(text)) return "平静";
+  if (/未来|不安|迷茫|期待/.test(text)) return "期待";
+  if (/开心|高兴|愉快/.test(text)) return "开心";
+  if (VIDEO_PRESETS[entry?.emotion]) return entry.emotion;
+  return "焦虑";
+}
 function presetVideos(emotion) {
   const rows = VIDEO_PRESETS[emotion] || VIDEO_PRESETS["焦虑"];
   return rows.map(([bvid, title]) => ({
@@ -713,16 +724,15 @@ function paintTracks() {
 function currentVideos() {
   if (draft.videos && draft.videos.length) return draft.videos.slice(0, 3);
   if (draft.video && draft.video.bvid) return [draft.video];
-  if (draft.emotion) return presetVideos(draft.emotion);
   return [];
 }
 function paintVideo() {
   const card = $("video-card");
   if (!card) return;
-  $("video-reason").textContent = draft.videoReason || (draft.emotion ? `这三支是按「${videoKeywordFor(draft)}」搜到的前几条，点进去就是视频。` : "");
-  $("care-video").hidden = !draft.emotion;
-  card.replaceChildren();
   const videos = currentVideos();
+  $("video-reason").textContent = draft.videoReason || (videos.length ? `这三支是按「${videoKeywordFor(draft)}」搜到的前几条，点进去就是视频。` : "");
+  $("care-video").hidden = !videos.length;
+  card.replaceChildren();
   videos.forEach((video) => {
     const link = document.createElement("a");
     link.className = "video-found";
@@ -965,10 +975,11 @@ function paintTalk() {
 }
 function syncButtons() {
   const writing = state.busy === "diary";
+  const asking = state.busy === "ask";
   const talking = state.busy === "talk";
-  $("btn-generate").disabled = writing;
+  $("btn-generate").disabled = writing || asking;
   $("btn-save").disabled = writing;
-  $("btn-generate").textContent = writing ? "正在写" : "帮我写一下";
+  $("btn-generate").textContent = writing ? "正在写" : (asking ? "先问你" : "帮我写一下");
   $("btn-save").textContent = "先记下";
   $("talk-send").disabled = talking;
   $("talk-stop").hidden = !talking;
@@ -1071,7 +1082,7 @@ async function attachVideo(entry, keyword) {
   entry.videoKeyword = next;
   if (draft === entry) paintVideo();
   let videos = await searchBilibili(next);
-  if (!videos.length) videos = presetVideos(entry.emotion);
+  if (!videos.length) videos = presetVideos(matchPreset(entry));
   entry.videos = videos;
   entry.video = videos[0] || null;
   entry.videoReason = `这三支是按「${next}」搜到的前几条，点进去就是视频。`;
@@ -1089,15 +1100,27 @@ function fallbackQuestion(entry, index) {
 function paintFollow() {
   const box = $("follow-box");
   if (!box) return;
-  const show = Boolean(draft.pendingQuestion) && !draft.followDone;
-  box.hidden = !show;
-  if (!show) return;
+  const waiting = state.busy === "ask" && !draft.pendingQuestion && !draft.followDone;
+  const show = waiting || (Boolean(draft.pendingQuestion) && !draft.followDone);
+  if (!show) {
+    if (box.open) box.close();
+    return;
+  }
+  if (!box.open) box.showModal();
   const step = (draft.followups || []).length + 1;
+  const button = $("follow-send");
+  if (waiting) {
+    $("follow-step").textContent = "先问你";
+    $("follow-q").textContent = "我先想一句要问你的。";
+    button.disabled = true;
+    button.textContent = "在想…";
+    return;
+  }
   $("follow-step").textContent = `第 ${step} / 3 句`;
   $("follow-q").textContent = draft.pendingQuestion;
-  const button = $("follow-send");
   button.disabled = state.busy === "ask" || state.busy === "diary";
-  button.textContent = state.busy === "ask" ? "在听…" : (step === 3 ? "说完了，你帮我看看" : "就这句");
+  button.textContent = state.busy === "ask" ? "在听…" : (step === 3 ? "说完了，帮我看看" : "就这句");
+  if (document.activeElement !== $("follow-a")) $("follow-a").focus();
 }
 async function nextQuestion(entry) {
   const asked = (entry.followups || []).map((item, index) => `${index + 1}. 问：${item.q}\n答：${item.a}`).join("\n");
@@ -1106,12 +1129,12 @@ async function nextQuestion(entry) {
     json: true,
     maxTokens: 240,
     messages: [
-      { role: "system", content: "你是心理咨询师。只再问一个新的、具体的问题，把这件事问清楚。不要分析，不要建议，不要说自己是人工智能。只输出 JSON：{\"question\":\"一句口语\"}" },
-      { role: "user", content: `日记：${entry.diary || entry.brief}\n已经问过：\n${asked || "（还没有）"}\n请出第 ${entry.followups.length + 1} 个问题。` },
+      { role: "system", content: "你是心理咨询师。只问一个新的、具体的问题，把这件事问清楚。先问，先不要写成日记，不要分析，不要建议，不要说自己是人工智能。只输出 JSON：{\"question\":\"一句口语\"}" },
+      { role: "user", content: `心情：${entry.emotion}\n原话：${entry.brief}\n日记：${entry.diary || "（还没写成）"}\n已经问过：\n${asked || "（还没有）"}\n请出第 ${(entry.followups || []).length + 1} 个问题。` },
     ],
   });
   const raw = parseJson(content);
-  return String(raw.question || "").trim() || fallbackQuestion(entry, entry.followups.length);
+  return String(raw.question || "").trim() || fallbackQuestion(entry, (entry.followups || []).length);
 }
 async function analyzeEntry(entry) {
   const extra = (entry.followups || []).map((item, index) => `${index + 1}. 问：${item.q}\n答：${item.a}`).join("\n");
@@ -1121,10 +1144,13 @@ async function analyzeEntry(entry) {
     maxTokens: 1600,
     messages: [
       { role: "system", content: DIARY_SYSTEM },
-      { role: "user", content: `日期：${entry.date}\n心情：${entry.emotion}\n分数：${entry.moodScore}\n原话：${entry.brief}\n日记：${entry.diary}\n追问：\n${extra}\n请根据日记和这三句补充，给出分析、坐一下、动一动、音乐和 B 站搜索词。日记字段请原样返回现在这篇日记，不要重写。` },
+      { role: "user", content: `日期：${entry.date}\n心情：${entry.emotion}\n分数：${entry.moodScore}\n原话：${entry.brief}\n已经写成的日记：${entry.diary}\n三句追问：\n${extra}\n日记不要重写。请根据日记和这三句补充，给出心情疗愈诊断、触发、坐一下、动一动、音乐和 B 站搜索词。videoKeyword 必须贴着他刚才说的具体事，不要一律写成焦虑。` },
     ],
   });
   const raw = parseJson(content);
+  const written = String(raw.diary || "").trim();
+  if (written) entry.diary = written;
+  entry.title = String(raw.title || entry.title || "").replace(/\s+/g, "").slice(0, 24);
   entry.triggers = Array.isArray(raw.triggers) ? raw.triggers.map((item) => String(item).slice(0, 16)).filter(Boolean).slice(0, 3) : [];
   entry.analysis = String(raw.analysis || "").trim();
   entry.meditation = String(raw.meditation || "").trim();
@@ -1155,9 +1181,11 @@ async function answerFollow() {
   entry.pendingQuestion = "";
   if (entry.followups.length >= 3) {
     entry.followDone = true;
+    entry.pendingQuestion = "";
     commitDraft();
     if (draft === entry) paintFollow();
     state.busy = "diary";
+    setWriting(true);
     syncButtons();
     try {
       await analyzeEntry(entry);
@@ -1166,6 +1194,7 @@ async function answerFollow() {
       if (msg) toast(msg);
     } finally {
       state.busy = false;
+      setWriting(false);
       syncButtons();
       if (draft === entry) paintWrite();
     }
@@ -1221,6 +1250,15 @@ async function generate() {
     return;
   }
   const entry = draft;
+  entry.followups = [];
+  entry.followDone = false;
+  entry.pendingQuestion = "";
+  entry.analysis = "";
+  entry.meditation = "";
+  entry.movement = "";
+  entry.triggers = [];
+  entry.videos = [];
+  entry.video = null;
   commitDraft();
   state.busy = "diary";
   setWriting(true);
@@ -1229,9 +1267,9 @@ async function generate() {
     const content = await complete({
       temperature: 0.8,
       json: true,
-      maxTokens: 1800,
+      maxTokens: 1200,
       messages: [
-        { role: "system", content: "你是心理咨询师。把来访者的一句短话收成第一人称日记，并就这件事问第一个具体问题。不要分析，不要建议，不要说自己是人工智能。日记用口语，180到320字，不编造他没说的人和事。问题只问一句。只输出 JSON：{\"title\":\"不超过12个字\",\"diary\":\"...\",\"question\":\"一句口语\"}" },
+        { role: "system", content: "你是心理咨询师。只把来访者的一句短话收成第一人称日记。先不要分析，不要建议，不要提问，不要说自己是人工智能。日记用口语，180到320字，不编造他没说的人和事。只输出 JSON：{\"title\":\"不超过12个字\",\"diary\":\"...\"}" },
         { role: "user", content: `日期：${entry.date}\n心情：${entry.emotion}\n分数（10分最好）：${entry.moodScore}\n原话：\n${entry.brief}` },
       ],
     });
@@ -1239,39 +1277,31 @@ async function generate() {
     entry.title = String(raw.title || "").replace(/\s+/g, "").slice(0, 24);
     entry.diary = String(raw.diary || "").trim();
     if (!entry.diary) throw new Error("这次没写成一段，再试一次。");
-    entry.followups = [];
-    entry.followDone = false;
-    entry.pendingQuestion = String(raw.question || "").trim() || fallbackQuestion(entry, 0);
-    entry.analysis = "";
-    entry.triggers = [];
-    entry.meditation = "";
-    entry.movement = "";
-    entry.talkStarted = false;
-    entry.messages = [];
-    entry.musicQuery = MUSIC_FALLBACK[entry.emotion] || "calm piano";
-    entry.musicReason = `你选了${entry.emotion}，先放段安静点的。`;
-    entry.videoKeyword = VIDEO_KEYWORD[entry.emotion] || "心情不好怎么办";
     entry.updatedAt = new Date().toISOString();
     saveDb();
-    if (draft === entry) {
-      fillText();
-      paintWrite();
-    }
     state.busy = false;
     setWriting(false);
     syncButtons();
-    await Promise.all([
-      attachMusic(entry.musicQuery, entry.musicReason, entry),
-      attachVideo(entry, entry.videoKeyword),
-    ]);
+    if (draft === entry) paintWrite();
+    state.busy = "ask";
+    syncButtons();
+    if (draft === entry) paintFollow();
+    try {
+      entry.pendingQuestion = await nextQuestion(entry);
+    } catch (error) {
+      entry.pendingQuestion = fallbackQuestion(entry, 0);
+      const msg = friendlyError(error);
+      if (msg) toast(msg);
+    }
   } catch (error) {
     const msg = friendlyError(error);
     if (msg) toast(msg);
-    paintWrite();
   } finally {
     state.busy = false;
     setWriting(false);
+    saveDb();
     syncButtons();
+    if (draft === entry) paintWrite();
   }
 }
 
@@ -1458,6 +1488,13 @@ function bind() {
   $("btn-save").addEventListener("click", () => saveOnly());
   $("btn-generate").addEventListener("click", () => generate());
   $("follow-send").addEventListener("click", () => answerFollow());
+  $("follow-box").addEventListener("cancel", (event) => event.preventDefault());
+  $("follow-a").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      answerFollow();
+    }
+  });
   document.querySelectorAll("[data-route]").forEach((link) => {
     link.addEventListener("click", (event) => {
       event.preventDefault();
