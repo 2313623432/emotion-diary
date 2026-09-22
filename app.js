@@ -222,7 +222,7 @@ async function postChat(body, signal) {
     },
     body: JSON.stringify(body),
     referrerPolicy: "no-referrer",
-    signal,
+    signal: signal || AbortSignal.timeout(30000),
   });
   return res;
 }
@@ -909,13 +909,17 @@ function paintTalk() {
   syncButtons();
 }
 function syncButtons() {
-  const busy = Boolean(state.busy);
-  $("btn-generate").disabled = busy;
-  $("btn-save").disabled = busy;
-  $("btn-generate").textContent = state.busy === "diary" ? "在写…" : "帮我写成一段";
-  $("btn-save").textContent = state.busy === "music" ? "在找歌…" : "先记下";
-  $("talk-send").disabled = busy;
-  $("talk-stop").hidden = state.busy !== "talk";
+  const writing = state.busy === "diary";
+  const talking = state.busy === "talk";
+  $("btn-generate").disabled = writing;
+  $("btn-save").disabled = writing;
+  $("btn-generate").textContent = writing ? "在写…" : "帮我写成一段";
+  $("btn-save").textContent = "先记下";
+  $("talk-send").disabled = talking;
+  $("talk-stop").hidden = !talking;
+  document.querySelectorAll(".stamp, #btn-new, #btn-delete, #btn-talk, .nav a, .dock a").forEach((node) => {
+    node.removeAttribute("disabled");
+  });
 }
 function show(route) {
   if ((draft?.brief || "").trim() || (draft?.diary || "").trim()) {
@@ -957,7 +961,9 @@ function openKey() {
   $("api-model").value = db.settings.model || "deepseek-flash";
   $("api-base").value = db.settings.baseUrl || "https://api.deepseek.com";
   $("key-msg").textContent = "";
-  $("key-dialog").showModal();
+  const dialog = $("key-dialog");
+  if (!dialog.open) dialog.show();
+  $("api-key").focus();
 }
 function friendlyError(error) {
   if (error?.code === "NO_KEY" || error?.message === "NO_KEY") return "先在右上角设置里填上，我才能接着陪你。";
@@ -967,8 +973,6 @@ function friendlyError(error) {
 }
 
 async function attachMusic(query, reason, entry = draft) {
-  state.busy = "music";
-  syncButtons();
   if (draft === entry) $("music-status").textContent = "在找能听的…";
   try {
     const found = await searchMusic(query);
@@ -986,9 +990,6 @@ async function attachMusic(query, reason, entry = draft) {
       $("btn-reshuffle").hidden = false;
       toast("找歌那边暂时没回。");
     }
-  } finally {
-    state.busy = false;
-    syncButtons();
   }
 }
 async function attachVideo(entry, keyword) {
@@ -1072,6 +1073,8 @@ async function generate() {
       fillText();
       paintWrite();
     }
+    state.busy = false;
+    syncButtons();
     await Promise.all([
       attachMusic(entry.musicQuery, entry.musicReason, entry),
       attachVideo(entry, entry.videoKeyword),
@@ -1079,9 +1082,10 @@ async function generate() {
   } catch (error) {
     const msg = friendlyError(error);
     if (msg) toast(msg);
+    paintWrite();
+  } finally {
     state.busy = false;
     syncButtons();
-    paintWrite();
   }
 }
 
@@ -1241,6 +1245,7 @@ function bind() {
     button.className = "stamp";
     button.dataset.emotion = mood.label;
     button.textContent = mood.label;
+    button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
       draft.emotion = mood.label;
       draft.moodScore = mood.score;
@@ -1262,6 +1267,9 @@ function bind() {
     draft.diary = event.target.value;
     paintCrisis($("crisis-write"), `${draft.brief}\n${draft.diary}`);
     queueSave();
+  });
+  ["btn-save", "btn-generate", "btn-talk", "btn-new", "btn-delete"].forEach((id) => {
+    $(id).addEventListener("mousedown", (event) => event.preventDefault());
   });
   $("btn-save").addEventListener("click", () => saveOnly());
   $("btn-generate").addEventListener("click", () => generate());
