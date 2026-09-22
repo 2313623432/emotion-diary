@@ -968,7 +968,7 @@ function syncButtons() {
   const talking = state.busy === "talk";
   $("btn-generate").disabled = writing;
   $("btn-save").disabled = writing;
-  $("btn-generate").textContent = writing ? "在写…" : "帮我写成一段";
+  $("btn-generate").textContent = writing ? "正在写" : "帮我写一下";
   $("btn-save").textContent = "先记下";
   $("talk-send").disabled = talking;
   $("talk-stop").hidden = !talking;
@@ -976,16 +976,33 @@ function syncButtons() {
     node.removeAttribute("disabled");
   });
 }
+function setWriting(on) {
+  const sheet = document.querySelector("#view-write .sheet");
+  if (sheet) sheet.classList.toggle("is-writing", on);
+  $("btn-generate").classList.toggle("is-busy", on);
+}
 function show(route) {
-  if ((draft?.brief || "").trim() || (draft?.diary || "").trim()) {
-    if (draft.emotion) commitDraft();
-  }
-  state.route = route;
-  history.replaceState(null, "", `#${route}`);
+  const next = route === "curve" || route === "talk" ? route : "write";
+  try {
+    if ($("key-dialog").open) $("key-dialog").close();
+  } catch { /* ignore */ }
+  try {
+    if ((draft?.brief || "").trim() || (draft?.diary || "").trim()) {
+      if (draft.emotion) commitDraft();
+    }
+  } catch { /* ignore */ }
+  state.route = next;
+  try { history.replaceState(null, "", `#${next}`); } catch { /* ignore */ }
   paintNav();
-  if (route === "write") paintWrite();
-  if (route === "curve") paintChart();
-  if (route === "talk") paintTalk();
+  try {
+    if (next === "write") paintWrite();
+    if (next === "curve") paintChart();
+    if (next === "talk") paintTalk();
+  } catch (error) {
+    console.error(error);
+    toast("这一页没打开，再点一次。");
+  }
+  window.scrollTo(0, 0);
 }
 
 function commitDraft() {
@@ -1008,6 +1025,7 @@ function openEntry(id) {
 function requireMood() {
   if (draft.emotion) return true;
   $("mood-need").hidden = false;
+  toast("先在左边点一个心情，比如焦虑。");
   $("stamps").scrollIntoView({ behavior: "smooth", block: "center" });
   return false;
 }
@@ -1198,12 +1216,14 @@ async function generate() {
   }
   if (!requireMood()) return;
   if (!hasKey()) {
+    toast("右上角点设置，填上之后我才能写。");
     openKey();
     return;
   }
   const entry = draft;
   commitDraft();
   state.busy = "diary";
+  setWriting(true);
   syncButtons();
   try {
     const content = await complete({
@@ -1238,6 +1258,7 @@ async function generate() {
       paintWrite();
     }
     state.busy = false;
+    setWriting(false);
     syncButtons();
     await Promise.all([
       attachMusic(entry.musicQuery, entry.musicReason, entry),
@@ -1249,6 +1270,7 @@ async function generate() {
     paintWrite();
   } finally {
     state.busy = false;
+    setWriting(false);
     syncButtons();
   }
 }
@@ -1411,7 +1433,6 @@ function bind() {
     button.className = "stamp";
     button.dataset.emotion = mood.label;
     button.textContent = mood.label;
-    button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
       draft.emotion = mood.label;
       draft.moodScore = mood.score;
@@ -1434,13 +1455,15 @@ function bind() {
     paintCrisis($("crisis-write"), `${draft.brief}\n${draft.diary}`);
     queueSave();
   });
-  ["btn-save", "btn-generate", "btn-talk", "btn-new", "btn-delete"].forEach((id) => {
-    $(id).addEventListener("mousedown", (event) => event.preventDefault());
-  });
   $("btn-save").addEventListener("click", () => saveOnly());
   $("btn-generate").addEventListener("click", () => generate());
-  $("follow-send").addEventListener("mousedown", (event) => event.preventDefault());
   $("follow-send").addEventListener("click", () => answerFollow());
+  document.querySelectorAll("[data-route]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      show(link.dataset.route);
+    });
+  });
   $("brief").addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") generate();
   });
